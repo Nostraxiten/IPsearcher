@@ -60,7 +60,7 @@ graph TD
 Clona o descarga este repositorio directamente en tu máquina:
 
 ```bash
-git clone https://github.com/tu-usuario/IPsearcher.git
+git clone https://github.com/nostraxiten/IPsearcher.git
 cd IPsearcher
 ```
 
