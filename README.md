@@ -10,7 +10,8 @@ A professional, fast, and concurrent Python tool for scanning, discovering, and 
 
 ## Key Features
 
-*   **Fast Port-Based Detection (NEW):** Filter results by **1 to 3 TCP ports of interest**. Instead of returning random alive hosts, the tool returns **only** the IPs that have the selected port(s) `OPEN`. For example, select port `22` to discover only hosts exposing SSH — regardless of version — or combine ports with `AND`/`OR` matching modes.
+*   **Fast Port-Based Detection:** Filter results by **1 to 3 TCP ports of interest**. Instead of returning random alive hosts, the tool returns **only** the IPs that have the selected port(s) `OPEN`. For example, select port `22` to discover only hosts exposing SSH — regardless of version — or combine ports with `AND`/`OR` matching modes.
+*   **Verified Port State + Firewall Detection (NEW):** Every port is classified into a real TCP state — `open`, `closed` (active refusal) or `filtered` (no response) — and an `open` result is confirmed with a second, independent connection before being reported, cutting down false positives against tools like Nmap (e.g. hosts/tarpits that accept a handshake once but not consistently). On top of that, you can filter by firewall presence: only hosts that respond clearly (`sin firewall`, ready for direct scanning) or only hosts where at least one probed port is silently dropped (`con firewall`).
 *   **Lightweight TCP Scanning (Termux-friendly):** Port detection uses direct, non-blocking **socket connections** instead of spawning a `ping` subprocess per host. This removes the process/file-descriptor exhaustion that made the tool crash on Termux after several runs.
 *   **Bounded Queue + Worker Model:** A single persistent pool of worker threads consumes IPs from a size-limited queue (backpressure). Memory stays flat and thread pools are no longer created/destroyed in tight loops, keeping long sessions stable.
 *   **Improved Interface:** Colorized banner, structured menu, a common-ports reference table, and live match reporting with the open ports for each hit.
@@ -34,7 +35,8 @@ The scanner works by sending ICMP requests (pings) to the addresses generated or
 graph TD
     A[Tool Startup] --> B[Mode Selection in Menu]
     B --> PF[Port Filter Setup: 1-3 ports / AND-OR / ICMP]
-    PF --> C{Selected Mode}
+    PF --> FW[Firewall Filter Setup: any / no firewall / with firewall]
+    FW --> C{Selected Mode}
     C -->|Classes A/B/C| D[Random /24 Subnet Generation]
     C -->|Custom CIDR| E[Subnet Host Mapping]
     C -->|Random IPv6/IPv4| F[Random Address Generator]
@@ -45,11 +47,25 @@ graph TD
     Q --> G[Persistent Worker Pool]
 
     G --> M{Port filter set?}
-    M -->|Yes| N[TCP connect check - fast short-circuit]
+    M -->|Yes| N[TCP connect check: open/closed/filtered]
     M -->|No| H[ICMP Ping - 2 attempts]
 
-    N -->|Ports match filter| I[IP Registered as MATCH]
-    N -->|No match| K[IP Discarded]
+    N --> V{Open result?}
+    V -->|Yes| V2[2nd independent connection to confirm]
+    V -->|No| S[State: closed or filtered]
+    V2 -->|Confirmed| S2[State: open]
+    V2 -->|Not confirmed| S3[State: filtered]
+
+    S --> FWV{Firewall verdict}
+    S2 --> FWV
+    S3 --> FWV
+    FWV -->|Any filtered port| CF[con_firewall]
+    FWV -->|All ports definitive| SF[sin_firewall]
+
+    CF --> MF{Matches firewall filter?}
+    SF --> MF
+    MF -->|Yes + ports match filter| I[IP Registered as MATCH]
+    MF -->|No| K[IP Discarded]
     H -->|Reply| I
     H -->|No reply| K
 
@@ -109,7 +125,19 @@ After picking a mode, the tool asks for the ports you care about. This step appl
     *   **`[1] ALL` (AND):** the IP is reported only if **every** selected port is open (stricter).
     *   **`[2] ANY` (OR):** the IP is reported if **at least one** selected port is open.
 
-Only IPs that satisfy the filter are shown and saved — no random results. Detection is fast because a closed port in `ALL` mode discards the host immediately.
+Only IPs that satisfy the filter are shown and saved — no random results. Detection is fast because a port that doesn't confirm as open in `ALL` mode discards the host immediately.
+
+Each probed port is classified as `open`, `closed` (active refusal, e.g. RST) or `filtered` (no response at all). A port only counts as `open` after a **second, independent connection confirms it** — this is what keeps results consistent with Nmap: a single successful `connect()` isn't proof of a real service, since some firewalls/tarpits complete a handshake once (or intermittently) without there being anything actually listening behind it.
+
+### Firewall Filter (NEW)
+
+Right after the port filter (only when at least one port is set), the tool asks:
+
+*   **`[1]` Any** *(default)*: no firewall-based filtering.
+*   **`[2]` IPs WITHOUT firewall:** only shows hosts where every probed port gave a definitive answer (`open` or `closed`) — i.e. nothing is silently dropping packets, so the host is a good candidate for direct/deeper scanning.
+*   **`[3]` IPs WITH firewall:** only shows hosts where at least one probed port was `filtered` (no response), which typically indicates a firewall/IDS dropping the packet.
+
+This lets you target exactly what you're looking for: hosts that will let you scan them further, or hosts that are actively filtering traffic.
 
 You can also lower the thread count and connection timeout when prompted — useful on constrained devices (Termux / mobile).
 
@@ -147,8 +175,9 @@ You can adjust the scanner's behavior by modifying the attributes in the initial
 *   `self.pings_per_ip = 2`: Number of ping attempts per IP address (ICMP mode only).
 *   `self.max_hosts_scan_ipv4 = 1000`: Limit of hosts sampled per large IPv4 network segment.
 *   `self.work_queue = queue.Queue(maxsize=3000)`: Bounded work queue that caps memory usage and provides backpressure to the producers.
+*   `self.verify_delay = 0.15`: Delay in seconds between the first and second connection attempt when confirming a port as `open`.
 
-Ports and matching mode (`self.ports_filter`, `self.match_mode`) are configured interactively at runtime.
+Ports and matching mode (`self.ports_filter`, `self.match_mode`), as well as the firewall filter (`self.firewall_mode`), are configured interactively at runtime.
 
 ---
 

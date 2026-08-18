@@ -8,6 +8,7 @@ import os
 import signal
 import sys
 import queue
+import errno
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -66,6 +67,12 @@ class IPScannerAdvanced:
         # Filtro de puertos (deteccion rapida)
         self.ports_filter = []       # lista de 1-3 puertos de interes
         self.match_mode = "all"      # "all" = todos abiertos, "any" = al menos uno
+
+        # Filtro de firewall (requiere ports_filter activo)
+        # "any" = sin filtrar, "no_firewall" = solo IPs que responden claro
+        # (abierto/rechazado), "with_firewall" = solo IPs que filtran/callan
+        self.firewall_mode = "any"
+        self.verify_delay = 0.15     # pausa entre el 1er y 2o intento al verificar "open"
 
         # Sincronizacion / cola de trabajo (evita crashes por saturacion)
         self.lock = threading.Lock()
@@ -137,51 +144,85 @@ class IPScannerAdvanced:
         return COMMON_PORTS.get(port, "TCP")
 
     def check_port(self, ip, port):
-        """Conexion TCP ligera (sin lanzar procesos). Devuelve True si el
-        puerto esta OPEN. Esto sustituye al ping por subprocess, que es lo
-        que saturaba Termux tras varias busquedas."""
+        """Conexion TCP ligera (sin lanzar procesos). Devuelve el estado real:
+        'open' (handshake completado), 'closed' (rechazo activo/RST -> no hay
+        nada filtrando esa conexion) o 'filtered' (timeout, sin respuesta,
+        tipico de un firewall descartando el paquete en silencio)."""
         family = socket.AF_INET6 if ':' in ip else socket.AF_INET
         s = socket.socket(family, socket.SOCK_STREAM)
         s.settimeout(self.port_timeout)
         try:
-            return s.connect_ex((ip, port)) == 0
+            result = s.connect_ex((ip, port))
+            if result == 0:
+                return 'open'
+            if result == errno.ECONNREFUSED:
+                return 'closed'
+            return 'filtered'
+        except socket.timeout:
+            return 'filtered'
         except OSError:
-            return False
+            return 'filtered'
         finally:
             try:
                 s.close()
             except OSError:
                 pass
 
+    def probe_port(self, ip, port):
+        """Prueba un puerto y confirma los 'open' con una segunda conexion
+        independiente antes de darlos por buenos. Esto es lo que evita los
+        falsos positivos frente a Nmap: algunos firewalls/tarpits aceptan el
+        handshake una unica vez (o de forma intermitente) para despistar al
+        escaner, y una sola conexion no basta para distinguirlo de un
+        servicio real."""
+        state = self.check_port(ip, port)
+        if state == 'open':
+            if not self.running:
+                return state
+            time.sleep(self.verify_delay)
+            if self.check_port(ip, port) != 'open':
+                state = 'filtered'  # abrio una vez y no repite: no es fiable
+        return state
+
     def detect_ports(self, ip):
         """Deteccion rapida con corto-circuito.
 
-        - modo 'all': el primer puerto cerrado descarta la IP al instante
-          (asi la gran mayoria de IPs se descartan con 1 sola conexion).
-        - modo 'any': devuelve los puertos que esten abiertos.
+        - modo 'all': el primer puerto que no queda confirmado como abierto
+          descarta la IP al instante.
+        - modo 'any': prueba todos los puertos y devuelve los que esten
+          abiertos.
 
-        Devuelve la lista de puertos abiertos que cumplen el filtro, o None
-        si la IP no cumple (no se muestra)."""
+        Devuelve (puertos_abiertos, estados_por_puerto) si la IP cumple el
+        filtro, o None si no cumple (no se muestra). 'estados_por_puerto' se
+        usa despues para el veredicto de firewall (ver firewall_verdict)."""
         ports = self.ports_filter
+        port_states = {}
 
         if self.match_mode == "all":
-            open_ports = []
             for p in ports:
                 if not self.running:
                     return None
-                if self.check_port(ip, p):
-                    open_ports.append(p)
-                else:
+                state = self.probe_port(ip, p)
+                port_states[p] = state
+                if state != 'open':
                     return None  # necesitamos TODOS abiertos
-            return open_ports
+            return list(ports), port_states
         else:  # any
-            open_ports = []
             for p in ports:
                 if not self.running:
                     break
-                if self.check_port(ip, p):
-                    open_ports.append(p)
-            return open_ports if open_ports else None
+                port_states[p] = self.probe_port(ip, p)
+            open_ports = [p for p in ports if port_states.get(p) == 'open']
+            return (open_ports, port_states) if open_ports else None
+
+    def firewall_verdict(self, port_states):
+        """'con_firewall' si algun puerto probado se quedo sin respuesta
+        (filtered); 'sin_firewall' si todos los puertos dieron una respuesta
+        clara (abierto o rechazado), lo que indica que se puede escanear la
+        IP directamente sin que nada intercepte los paquetes."""
+        if any(s == 'filtered' for s in port_states.values()):
+            return 'con_firewall'
+        return 'sin_firewall'
 
     def ping_ip_once(self, ip):
         try:
@@ -220,25 +261,37 @@ class IPScannerAdvanced:
             self.scanned += 1
 
         if self.ports_filter:
-            open_ports = self.detect_ports(ip)
-            if open_ports is not None:
-                self.record_found(ip, ip_type, open_ports)
+            result = self.detect_ports(ip)
+            if result is None:
+                return
+            open_ports, port_states = result
+            verdict = self.firewall_verdict(port_states)
+            if self.firewall_mode == "no_firewall" and verdict != "sin_firewall":
+                return
+            if self.firewall_mode == "with_firewall" and verdict != "con_firewall":
+                return
+            self.record_found(ip, ip_type, open_ports, verdict)
         else:
             if self.ping_ip(ip):
-                self.record_found(ip, ip_type, [])
+                self.record_found(ip, ip_type, [], None)
 
-    def record_found(self, ip, ip_type, open_ports):
+    def record_found(self, ip, ip_type, open_ports, verdict=None):
         with self.lock:
             self.alive += 1
             self.found_ips.append(ip)
-            self.found_details.append((ip, list(open_ports)))
+            self.found_details.append((ip, list(open_ports), verdict))
             count = self.alive
-            self.append_to_file(ip, open_ports)  # guardado incremental
+            self.append_to_file(ip, open_ports, verdict)  # guardado incremental
 
         if open_ports:
             plist = ", ".join(f"{p}/{self.port_name(p)}" for p in open_ports)
             tag = C.paint(f"[{plist}]", C.CYAN)
-            line = f"{C.paint('[+]', C.GREEN)} {C.paint(ip, C.WHITE)} {tag}  {C.paint(f'({count})', C.GRAY)}"
+            fw_tag = ""
+            if verdict == "con_firewall":
+                fw_tag = "  " + C.paint("[con firewall]", C.YELLOW)
+            elif verdict == "sin_firewall":
+                fw_tag = "  " + C.paint("[sin firewall]", C.MAGENTA)
+            line = f"{C.paint('[+]', C.GREEN)} {C.paint(ip, C.WHITE)} {tag}{fw_tag}  {C.paint(f'({count})', C.GRAY)}"
         else:
             line = (f"{C.paint('[+]', C.GREEN)} [{ip_type}] "
                     f"{C.paint('VIVA', C.GREEN)} {C.paint(ip, C.WHITE)}  {C.paint(f'({count})', C.GRAY)}")
@@ -364,7 +417,7 @@ class IPScannerAdvanced:
     # ------------------------------------------------------------------
     # Resultados / persistencia
     # ------------------------------------------------------------------
-    def append_to_file(self, ip, open_ports):
+    def append_to_file(self, ip, open_ports, verdict=None):
         """Guardado incremental: si el proceso muere, los hallazgos ya estan
         en disco. Debe llamarse con self.lock adquirido."""
         try:
@@ -377,10 +430,13 @@ class IPScannerAdvanced:
                     if self.ports_filter:
                         pl = ", ".join(f"{p}/{self.port_name(p)}" for p in self.ports_filter)
                         f.write(f"# Filtro de puertos ({self.match_mode}): {pl}\n")
+                        if self.firewall_mode != "any":
+                            f.write(f"# Filtro de firewall: {self.firewall_mode}\n")
                     f.write("# " + "=" * 50 + "\n\n")
+                fw = f"\t{verdict}" if verdict else ""
                 if open_ports:
                     pl = ",".join(str(p) for p in open_ports)
-                    f.write(f"{ip}\t{pl}\n")
+                    f.write(f"{ip}\t{pl}{fw}\n")
                 else:
                     f.write(f"{ip}\n")
         except Exception:
@@ -410,6 +466,8 @@ class IPScannerAdvanced:
         if self.ports_filter:
             pl = ", ".join(f"{p}/{self.port_name(p)}" for p in self.ports_filter)
             print(f"  Filtro puertos : {C.paint(pl, C.CYAN)} ({self.match_mode})")
+            if self.firewall_mode != "any":
+                print(f"  Filtro firewall: {C.paint(self.firewall_mode, C.YELLOW)}")
 
         if self.found_ips:
             buckets = {'A': [], 'B': [], 'C': [], 'IPv6': []}
@@ -422,10 +480,15 @@ class IPScannerAdvanced:
                   f"   Clase C: {len(buckets['C'])}   IPv6: {len(buckets['IPv6'])}")
 
             print(C.paint("\n[+] Primeras coincidencias:", C.BLUE))
-            for ip, ports in self.found_details[:30]:
+            for ip, ports, verdict in self.found_details[:30]:
+                fw = ""
+                if verdict == "con_firewall":
+                    fw = "  " + C.paint("[con firewall]", C.YELLOW)
+                elif verdict == "sin_firewall":
+                    fw = "  " + C.paint("[sin firewall]", C.MAGENTA)
                 if ports:
                     pl = ", ".join(f"{p}/{self.port_name(p)}" for p in ports)
-                    print(f"    {ip}  {C.paint('[' + pl + ']', C.CYAN)}")
+                    print(f"    {ip}  {C.paint('[' + pl + ']', C.CYAN)}{fw}")
                 else:
                     print(f"    {ip}")
             if len(self.found_details) > 30:
@@ -438,7 +501,7 @@ class IPScannerAdvanced:
             print(C.paint("[!] No se encontraron IPs para guardar", C.YELLOW))
             return
         buckets = {'A': [], 'B': [], 'C': [], 'IPv6': []}
-        detail_map = {ip: ports for ip, ports in self.found_details}
+        detail_map = {ip: (ports, verdict) for ip, ports, verdict in self.found_details}
         for ip in self.found_ips:
             k = self.classify(ip)
             if k in buckets:
@@ -459,14 +522,17 @@ class IPScannerAdvanced:
                 if self.ports_filter:
                     pl = ", ".join(f"{p}/{self.port_name(p)}" for p in self.ports_filter)
                     f.write(f"# Filtro de puertos ({self.match_mode}): {pl}\n")
+                    if self.firewall_mode != "any":
+                        f.write(f"# Filtro de firewall: {self.firewall_mode}\n")
                 f.write("# " + "=" * 50 + "\n\n")
                 for k in ('A', 'B', 'C', 'IPv6'):
                     if buckets[k]:
                         f.write(titles[k] + "\n")
                         for ip in buckets[k]:
-                            ports = detail_map.get(ip, [])
+                            ports, verdict = detail_map.get(ip, ([], None))
+                            fw = f"\t{verdict}" if verdict else ""
                             if ports:
-                                f.write(f"{ip}\t{','.join(str(p) for p in ports)}\n")
+                                f.write(f"{ip}\t{','.join(str(p) for p in ports)}{fw}\n")
                             else:
                                 f.write(ip + "\n")
                         f.write("\n")
@@ -573,6 +639,30 @@ class IPScannerAdvanced:
         pl = ", ".join(f"{p}/{self.port_name(p)}" for p in self.ports_filter)
         print(C.paint(f"  [+] Filtro activo: {pl}  ({self.match_mode})", C.GREEN))
 
+    def ask_firewall_mode(self):
+        """Filtro CON/SIN firewall. Solo tiene sentido con puertos activos,
+        porque necesita el estado TCP real (open/closed/filtered) de cada
+        puerto: un puerto que no responde nada (filtered) es indicio de un
+        firewall descartando el paquete en silencio; un puerto que responde
+        con RST (closed) o completa el handshake (open) indica que nada
+        esta filtrando esa conexion, es decir, la IP admite escaneo directo."""
+        if not self.ports_filter:
+            self.firewall_mode = "any"
+            return
+        print(C.paint("\n" + "─" * 60, C.CYAN))
+        print(C.paint("  DETECCION DE FIREWALL", C.BOLD + C.YELLOW))
+        print(C.paint("─" * 60, C.CYAN))
+        print("  Permite separar IPs que responden con claridad (aptas para")
+        print("  escanear a fondo) de IPs detras de un firewall que filtra")
+        print("  los paquetes en silencio.")
+        print(f"    {C.paint('[1]', C.GREEN)} Cualquiera                [por defecto]")
+        print(f"    {C.paint('[2]', C.GREEN)} Solo IPs SIN firewall     (permiten escaneo directo)")
+        print(f"    {C.paint('[3]', C.GREEN)} Solo IPs CON firewall     (filtran/descartan paquetes)")
+        m = input(C.paint("  [?] Elige (1/2/3): ", C.GREEN)).strip()
+        self.firewall_mode = {"2": "no_firewall", "3": "with_firewall"}.get(m, "any")
+        if self.firewall_mode != "any":
+            print(C.paint(f"  [+] Filtro de firewall activo: {self.firewall_mode}", C.GREEN))
+
     def ask_performance(self):
         """Permite bajar hilos/timeout (util en moviles/Termux)."""
         print(C.paint("\n  Rendimiento (Enter = valores por defecto):", C.GRAY))
@@ -634,12 +724,15 @@ class IPScannerAdvanced:
 
         # Configuracion comun a TODOS los modos (deteccion rapida por puertos)
         self.ask_port_filter()
+        self.ask_firewall_mode()
         self.ask_performance()
 
         print(C.paint("\n" + "─" * 60, C.CYAN))
         if self.ports_filter:
             pl = ", ".join(f"{p}/{self.port_name(p)}" for p in self.ports_filter)
             print(C.paint(f"[+] Iniciando deteccion por puertos: {pl} ({self.match_mode})", C.BOLD + C.GREEN))
+            if self.firewall_mode != "any":
+                print(C.paint(f"[+] Filtro de firewall: {self.firewall_mode}", C.BOLD + C.GREEN))
         else:
             print(C.paint("[+] Iniciando deteccion por ping ICMP (2 intentos/IP)", C.BOLD + C.GREEN))
         print(C.paint(f"[+] Hilos: {self.threads} · Timeout: {self.port_timeout}s", C.GRAY))
