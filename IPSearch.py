@@ -9,6 +9,7 @@ import signal
 import sys
 import queue
 import errno
+import ssl
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -73,6 +74,12 @@ class IPScannerAdvanced:
         # (abierto/rechazado), "with_firewall" = solo IPs que filtran/callan
         self.firewall_mode = "any"
         self.verify_delay = 0.15     # pausa entre el 1er y 2o intento al verificar "open"
+
+        # Validacion de host (anti-middlebox / anti-IDS)
+        self.validate_hosts = True
+        self.skipped_middlebox = 0   # descartadas por canary ports (middlebox/CPE)
+        self.skipped_no_banner = 0   # descartadas por no tener servicio real
+        self.skipped_dead = 0        # descartadas por conexion muerta post-probe
 
         # Sincronizacion / cola de trabajo (evita crashes por saturacion)
         self.lock = threading.Lock()
@@ -184,6 +191,108 @@ class IPScannerAdvanced:
                 state = 'filtered'  # abrio una vez y no repite: no es fiable
         return state
 
+    # ------------------------------------------------------------------
+    # Validacion de host (B: canary, A: banner, C: post-probe)
+    # ------------------------------------------------------------------
+    def canary_check(self, ip):
+        """B: Prueba 3 puertos aleatorios altos que un host real deberia
+        rechazar (RST/closed). Si TODOS los acepta (open) sin rechazar
+        ninguno, es un middlebox/CPE que acepta todo sin servir nada."""
+        exclude = set(self.ports_filter)
+        canary_ports = []
+        while len(canary_ports) < 3:
+            p = random.randint(40000, 59999)
+            if p not in exclude and p not in canary_ports:
+                canary_ports.append(p)
+
+        has_closed = False
+        has_open = False
+        for port in canary_ports:
+            if not self.running:
+                return True
+            state = self.check_port(ip, port)
+            if state == 'closed':
+                has_closed = True
+                break
+            if state == 'open':
+                has_open = True
+
+        if has_closed:
+            return True
+        if has_open:
+            return False
+        return True
+
+    def grab_banner(self, ip, port):
+        """A: Intenta leer datos reales de un puerto abierto. Un servicio
+        real envia un banner (SSH, SMTP, FTP) o responde a un probe
+        (HTTP). Un middlebox o puerto fantasma acepta la conexion pero
+        no envia nada."""
+        family = socket.AF_INET6 if ':' in ip else socket.AF_INET
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        sock.settimeout(self.port_timeout)
+        try:
+            sock.connect((ip, port))
+
+            if port in (443, 465, 993, 995, 8443):
+                try:
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    ss = ctx.wrap_socket(sock)
+                    ss.close()
+                    return True
+                except ssl.SSLError:
+                    return True
+                except Exception:
+                    return False
+
+            if port in (80, 8080, 8000, 8888):
+                sock.sendall(b"HEAD / HTTP/1.0\r\nHost: check\r\n\r\n")
+
+            sock.settimeout(2.0)
+            try:
+                data = sock.recv(256)
+                if data:
+                    return True
+            except socket.timeout:
+                pass
+
+            try:
+                sock.sendall(b"\r\n")
+                sock.settimeout(1.5)
+                data = sock.recv(256)
+                return bool(data)
+            except Exception:
+                return False
+        except Exception:
+            return False
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def banner_check(self, ip, open_ports):
+        """A: Verifica que al menos un puerto abierto tiene un servicio
+        real detras (responde con datos). Si ningun puerto envia nada,
+        la IP probablemente no tiene servicios reales."""
+        for port in open_ports:
+            if not self.running:
+                return True
+            if self.grab_banner(ip, port):
+                return True
+        return False
+
+    def post_probe_check(self, ip, open_ports):
+        """C: Reconecta a un puerto abierto despues de todo el probing
+        para verificar que el host no nos ha bloqueado (IDS/rate-limit).
+        Si la conexion murio, este host 'morira' tambien en un scan."""
+        if not open_ports:
+            return True
+        time.sleep(0.3)
+        return self.check_port(ip, open_ports[0]) == 'open'
+
     def detect_ports(self, ip):
         """Deteccion rapida con corto-circuito.
 
@@ -270,6 +379,19 @@ class IPScannerAdvanced:
                 return
             if self.firewall_mode == "with_firewall" and verdict != "con_firewall":
                 return
+            if self.validate_hosts and self.running:
+                if not self.canary_check(ip):
+                    with self.lock:
+                        self.skipped_middlebox += 1
+                    return
+                if not self.banner_check(ip, open_ports):
+                    with self.lock:
+                        self.skipped_no_banner += 1
+                    return
+                if not self.post_probe_check(ip, open_ports):
+                    with self.lock:
+                        self.skipped_dead += 1
+                    return
             self.record_found(ip, ip_type, open_ports, verdict)
         else:
             if self.ping_ip(ip):
@@ -463,6 +585,16 @@ class IPScannerAdvanced:
         print(C.paint("=" * 60, C.CYAN))
         print(f"  IPs escaneadas : {C.paint(str(self.scanned), C.WHITE)}")
         print(f"  IPs encontradas: {C.paint(str(len(self.found_ips)), C.GREEN)}")
+        if self.validate_hosts and self.ports_filter:
+            skipped = self.skipped_middlebox + self.skipped_no_banner + self.skipped_dead
+            if skipped:
+                print(f"  IPs descartadas: {C.paint(str(skipped), C.YELLOW)} (validacion de host)")
+                if self.skipped_middlebox:
+                    print(C.paint(f"    · Middlebox/CPE detectado : {self.skipped_middlebox}", C.GRAY))
+                if self.skipped_no_banner:
+                    print(C.paint(f"    · Sin servicio real       : {self.skipped_no_banner}", C.GRAY))
+                if self.skipped_dead:
+                    print(C.paint(f"    · Conexion muerta (IDS)   : {self.skipped_dead}", C.GRAY))
         if self.ports_filter:
             pl = ", ".join(f"{p}/{self.port_name(p)}" for p in self.ports_filter)
             print(f"  Filtro puertos : {C.paint(pl, C.CYAN)} ({self.match_mode})")
@@ -663,6 +795,32 @@ class IPScannerAdvanced:
         if self.firewall_mode != "any":
             print(C.paint(f"  [+] Filtro de firewall activo: {self.firewall_mode}", C.GREEN))
 
+    def ask_validation(self):
+        """Configurar la validacion anti-middlebox / anti-IDS."""
+        if not self.ports_filter:
+            self.validate_hosts = False
+            return
+        print(C.paint("\n" + "─" * 60, C.CYAN))
+        print(C.paint("  VALIDACION DE HOST", C.BOLD + C.YELLOW))
+        print(C.paint("─" * 60, C.CYAN))
+        print("  Comprueba que la IP es un host real con servicios reales,")
+        print("  no un middlebox/CPE que acepta todo sin servir nada.")
+        print("  Tambien verifica que la conexion no muere tras el probe.")
+        print()
+        print(C.paint("  Checks:", C.WHITE))
+        print(C.paint("    · Canary ports  ", C.CYAN) + "prueba puertos random que deberian estar cerrados")
+        print(C.paint("    · Banner grab   ", C.CYAN) + "verifica que el servicio responde con datos reales")
+        print(C.paint("    · Post-probe    ", C.CYAN) + "reconecta tras el probe para detectar IDS/bloqueo")
+        print()
+        print(f"    {C.paint('[1]', C.GREEN)} Activar validacion      [por defecto]")
+        print(f"    {C.paint('[2]', C.GREEN)} Desactivar (mas rapido, menos fiable)")
+        m = input(C.paint("  [?] Elige (1/2): ", C.GREEN)).strip()
+        self.validate_hosts = m != "2"
+        if self.validate_hosts:
+            print(C.paint("  [+] Validacion de host activa", C.GREEN))
+        else:
+            print(C.paint("  [i] Validacion de host desactivada.", C.GRAY))
+
     def ask_performance(self):
         """Permite bajar hilos/timeout (util en moviles/Termux)."""
         print(C.paint("\n  Rendimiento (Enter = valores por defecto):", C.GRAY))
@@ -725,6 +883,7 @@ class IPScannerAdvanced:
         # Configuracion comun a TODOS los modos (deteccion rapida por puertos)
         self.ask_port_filter()
         self.ask_firewall_mode()
+        self.ask_validation()
         self.ask_performance()
 
         print(C.paint("\n" + "─" * 60, C.CYAN))
@@ -733,6 +892,8 @@ class IPScannerAdvanced:
             print(C.paint(f"[+] Iniciando deteccion por puertos: {pl} ({self.match_mode})", C.BOLD + C.GREEN))
             if self.firewall_mode != "any":
                 print(C.paint(f"[+] Filtro de firewall: {self.firewall_mode}", C.BOLD + C.GREEN))
+            if self.validate_hosts:
+                print(C.paint("[+] Validacion: canary + banner + post-probe", C.BOLD + C.GREEN))
         else:
             print(C.paint("[+] Iniciando deteccion por ping ICMP (2 intentos/IP)", C.BOLD + C.GREEN))
         print(C.paint(f"[+] Hilos: {self.threads} · Timeout: {self.port_timeout}s", C.GRAY))
