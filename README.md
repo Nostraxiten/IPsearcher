@@ -6,7 +6,7 @@
 
 A professional, fast, and concurrent Python tool for scanning, discovering, and classifying active IP addresses (IPv4 and IPv6) on local and public networks.
 
-<img width="641" height="644" alt="image" src="https://github.com/user-attachments/assets/216ac585-fecc-446b-8b47-df38d494e289" />
+<img width="571" height="577" alt="Captura de pantalla 2026-08-27 182727" src="https://github.com/user-attachments/assets/98fbe2d9-d09c-4cd2-871a-b414701683b2" />
 
 ## Key Features
 
