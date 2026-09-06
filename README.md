@@ -1,52 +1,43 @@
 # IPsearcher
 
-IPsearcher is a concurrent Python tool for discovering live IPv4/IPv6 hosts and
-checking TCP ports on networks you own or are authorized to audit.
+IPsearcher is a concurrent Python tool for discovering live IPv4 and IPv6
+hosts and checking TCP ports on networks you own or are authorized to audit.
 
 ## Requirements
 
 - Python 3.6+
-- Standard library only
+- Python standard library only
 
-## Command-line usage
+## Usage
 
-Run a single address or a finite CIDR network:
+Start the original interactive scanner:
 
 ```bash
-python IPSearch.py 192.168.1.10 -p 22 -NF
-python IPSearch.py 192.168.1.0/24 -p 80 443 -SF
-python IPSearch.py 2001:db8::/120 -p 443 --any
+python IPSearch.py
 ```
 
-### Arguments
+The menu lets you choose:
 
-| Argument | Description |
-| --- | --- |
-| `target` | IPv4/IPv6 address or CIDR network. |
-| `-p`, `--ports` | One to three TCP ports. Values can be space or comma separated. |
-| `-NF`, `--no-firewall` | Return hosts without filtered ports. Requires `-p`. |
-| `-SF`, `--with-firewall` | Return hosts with at least one filtered port. Requires `-p`. |
-| `--all` | With multiple ports, require every port to be open. Default. |
-| `--any` | With multiple ports, require at least one port to be open. |
-| `--no-host-validation` | Skip canary, banner, and post-probe checks. |
-| `--threads` | Set worker count from 1 to 500. |
-| `--timeout` | Set TCP timeout from 0.2 to 10 seconds. |
-| `-h`, `--help` | Show command help and examples. |
+- Class A, B, C, or all classes
+- A custom IPv4/IPv6 CIDR network
+- Random IPv4 or IPv6 scanning
+- ICMP discovery or a TCP port filter with one to three ports
+- `ALL` or `ANY` matching when multiple ports are selected
+- Firewall filtering for hosts with or without filtered ports
+- Host validation and worker/timeout settings
 
-Firewall state validation is enabled automatically whenever `-p` is used.
-Each port is classified as `open`, `closed`, or `filtered`; an `open` result
-is confirmed with a second connection. Without `-NF` or `-SF`, all matching
-firewall states are accepted.
+When TCP ports are selected, each port is classified as `open`, `closed`, or
+`filtered`. Open results are confirmed with a second connection. Firewall
+validation is part of the normal port-search workflow and can be selected from
+the interactive menu.
 
-When no target is supplied, `python IPSearch.py` opens the legacy interactive
-menu. Results are written incrementally and finalized in the `IPs` directory.
+Results are saved incrementally and finalized in the `IPs` directory.
 
 ## Package layout
 
 ```text
 IPSearch.py          Scanner entry point and scan engine
 ipsearcher/
-  cli.py             Argument parsing and CLI validation
   ports.py           Common TCP service names
 ```
 

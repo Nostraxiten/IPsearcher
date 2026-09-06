@@ -10,7 +10,6 @@ import sys
 import queue
 import errno
 import ssl
-from ipsearcher.cli import parse_args
 from ipsearcher.ports import COMMON_PORTS
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -100,7 +99,7 @@ class IPScannerAdvanced:
         # ordenado (mostrar resultados / guardar). Hacerlo aqui con hilos
         # activos era una de las causas de cierres inesperados.
         if self.running:
-            print(C.paint("\n[!] Deteniendo escaneo... (espera unos segundos)", C.YELLOW))
+            print(C.paint("\n[!] Stopping scan... (please wait)", C.YELLOW))
         self.running = False
 
     def create_folder(self):
@@ -535,14 +534,14 @@ class IPScannerAdvanced:
             new = not os.path.exists(self.output_file)
             with open(self.output_file, 'a') as f:
                 if new:
-                    f.write("# IPs VIVAS ENCONTRADAS (guardado incremental)\n")
-                    f.write(f"# Archivo: {self.file_counter}\n")
-                    f.write("# Fecha inicio: " + time.strftime("%Y-%m-%d %H:%M:%S") + "\n")
+                    f.write("# LIVE IPS FOUND (incremental save)\n")
+                    f.write(f"# File: {self.file_counter}\n")
+                    f.write("# Start date: " + time.strftime("%Y-%m-%d %H:%M:%S") + "\n")
                     if self.ports_filter:
                         pl = ", ".join(f"{p}/{self.port_name(p)}" for p in self.ports_filter)
-                        f.write(f"# Filtro de puertos ({self.match_mode}): {pl}\n")
+                        f.write(f"# Port filter ({self.match_mode}): {pl}\n")
                         if self.firewall_mode != "any":
-                            f.write(f"# Filtro de firewall: {self.firewall_mode}\n")
+                            f.write(f"# Firewall filter: {self.firewall_mode}\n")
                     f.write("# " + "=" * 50 + "\n\n")
                 fw = f"\t{verdict}" if verdict else ""
                 if open_ports:
@@ -619,7 +618,7 @@ class IPScannerAdvanced:
 
     def finalize_file(self):
         if not self.found_ips:
-            print(C.paint("[!] No se encontraron IPs para guardar", C.YELLOW))
+            print(C.paint("[!] No IPs found to save", C.YELLOW))
             return
         buckets = {'A': [], 'B': [], 'C': [], 'IPv6': []}
         detail_map = {ip: (ports, verdict) for ip, ports, verdict in self.found_details}
@@ -657,10 +656,10 @@ class IPScannerAdvanced:
                             else:
                                 f.write(ip + "\n")
                         f.write("\n")
-            print(C.paint(f"\n[+] IPs guardadas en: {self.output_file}", C.GREEN))
+            print(C.paint(f"\n[+] IPs saved to: {self.output_file}", C.GREEN))
             print(C.paint(f"[+] Total: {len(self.found_ips)} IPs", C.GREEN))
         except Exception as e:
-            print(C.paint(f"[!] Error guardando: {e}", C.RED))
+            print(C.paint(f"[!] Error saving results: {e}", C.RED))
 
     # ------------------------------------------------------------------
     # Interfaz (menu + configuracion de puertos)
@@ -674,30 +673,30 @@ class IPScannerAdvanced:
   |___|_|     |____/ \___\__,_|_|  |_| |_| |_|_|
 """
         print(C.paint(b, C.CYAN))
-        print(C.paint("        IP SCANNER ADVANCED  ·  deteccion rapida por puertos", C.BOLD + C.WHITE))
-        print(C.paint("        Clases A/B/C · IPv6 · CIDR · filtro de puertos", C.GRAY))
+        print(C.paint("        IP SCANNER ADVANCED  ·  fast port detection", C.BOLD + C.WHITE))
+        print(C.paint("        Classes A/B/C · IPv6 · CIDR · port filtering", C.GRAY))
 
     def print_menu(self):
         print(C.paint("\n" + "─" * 60, C.CYAN))
-        print(C.paint("  MODOS DE ESCANEO", C.BOLD + C.YELLOW))
+        print(C.paint("  SCAN MODES", C.BOLD + C.YELLOW))
         print(C.paint("─" * 60, C.CYAN))
         opts = [
-            ("1", "Clase A", "1.0.0.0 - 126.255.255.255  (grandes redes)"),
-            ("2", "Clase B", "128.0.0.0 - 191.255.255.255  (redes medianas)"),
-            ("3", "Clase C", "192.0.0.0 - 223.255.255.255  (redes pequenas)"),
-            ("4", "Todas las clases", "A + B + C balanceado"),
-            ("6", "Red personalizada", "introducir CIDR (IPv4 o IPv6)"),
-            ("7", "IPs aleatorias IPv6", "espacio global 2000::/3"),
-            ("8", "IPs aleatorias IPv4", "muestreo A/B/C al azar"),
+            ("1", "Class A", "1.0.0.0 - 126.255.255.255  (large networks)"),
+            ("2", "Class B", "128.0.0.0 - 191.255.255.255  (medium networks)"),
+            ("3", "Class C", "192.0.0.0 - 223.255.255.255  (small networks)"),
+            ("4", "All classes", "balanced A + B + C"),
+            ("6", "Custom network", "enter an IPv4 or IPv6 CIDR"),
+            ("7", "Random IPv6", "global 2000::/3 space"),
+            ("8", "Random IPv4", "random A/B/C sampling"),
         ]
         for num, name, desc in opts:
             print(f"  {C.paint('[' + num + ']', C.GREEN)} {C.paint(name.ljust(20), C.WHITE)} "
                   f"{C.paint(desc, C.GRAY)}")
-        print(f"  {C.paint('[5]', C.RED)} {C.paint('Salir', C.WHITE)}")
+        print(f"  {C.paint('[5]', C.RED)} {C.paint('Exit', C.WHITE)}")
         print(C.paint("─" * 60, C.CYAN))
 
     def show_port_presets(self):
-        print(C.paint("\n  Puertos comunes:", C.BOLD + C.YELLOW))
+        print(C.paint("\n  Common ports:", C.BOLD + C.YELLOW))
         items = list(COMMON_PORTS.items())
         for i in range(0, len(items), 4):
             row = items[i:i + 4]
@@ -707,18 +706,18 @@ class IPScannerAdvanced:
     def ask_port_filter(self):
         """Configura el filtro de 1-3 puertos (deteccion rapida)."""
         print(C.paint("\n" + "─" * 60, C.CYAN))
-        print(C.paint("  DETECCION RAPIDA POR PUERTOS", C.BOLD + C.YELLOW))
+        print(C.paint("  FAST PORT DETECTION", C.BOLD + C.YELLOW))
         print(C.paint("─" * 60, C.CYAN))
         print("  Filtra por puertos OPEN. Ej: escribe " + C.paint("22", C.CYAN) +
               " para ver SOLO IPs con SSH abierto.")
-        print("  Puedes indicar hasta " + C.paint("3", C.CYAN) + " puertos (separados por coma).")
-        print("  Deja vacio para usar deteccion por " + C.paint("ping ICMP", C.CYAN) + " (modo clasico).")
+        print("  You can enter up to " + C.paint("3", C.CYAN) + " ports (comma-separated).")
+        print("  Leave empty to use " + C.paint("ICMP ping", C.CYAN) + " detection (classic mode).")
         self.show_port_presets()
 
-        raw = input(C.paint("\n  [?] Puertos de interes (max 3) o Enter: ", C.GREEN)).strip()
+        raw = input(C.paint("\n  [?] Ports of interest (max 3) or Enter: ", C.GREEN)).strip()
         if not raw:
             self.ports_filter = []
-            print(C.paint("  [i] Modo ping ICMP activado.", C.GRAY))
+            print(C.paint("  [i] ICMP ping mode enabled.", C.GRAY))
             return
 
         ports = []
@@ -729,36 +728,36 @@ class IPScannerAdvanced:
             try:
                 p = int(tok)
             except ValueError:
-                print(C.paint(f"  [!] '{tok}' no es un puerto valido, ignorado.", C.YELLOW))
+                print(C.paint(f"  [!] '{tok}' is not a valid port; ignored.", C.YELLOW))
                 continue
             if 1 <= p <= 65535:
                 if p not in ports:
                     ports.append(p)
             else:
-                print(C.paint(f"  [!] {p} fuera de rango (1-65535), ignorado.", C.YELLOW))
+                print(C.paint(f"  [!] {p} is out of range (1-65535); ignored.", C.YELLOW))
 
         if not ports:
             self.ports_filter = []
-            print(C.paint("  [i] Sin puertos validos -> modo ping ICMP.", C.GRAY))
+            print(C.paint("  [i] No valid ports -> ICMP ping mode.", C.GRAY))
             return
 
         if len(ports) > 3:
             ports = ports[:3]
-            print(C.paint("  [!] Solo se admiten 3 puertos. Uso los 3 primeros.", C.YELLOW))
+            print(C.paint("  [!] Only 3 ports are supported. Using the first 3.", C.YELLOW))
 
         self.ports_filter = ports
 
         if len(ports) > 1:
-            print("\n  Modo de coincidencia:")
-            print(f"    {C.paint('[1]', C.GREEN)} TODOS abiertos (AND)  · mas estricto  [por defecto]")
-            print(f"    {C.paint('[2]', C.GREEN)} AL MENOS uno abierto (OR)")
-            m = input(C.paint("  [?] Elige (1/2): ", C.GREEN)).strip()
+            print("\n  Match mode:")
+            print(f"    {C.paint('[1]', C.GREEN)} ALL open (AND)  · stricter  [default]")
+            print(f"    {C.paint('[2]', C.GREEN)} ANY open (OR)")
+            m = input(C.paint("  [?] Choose (1/2): ", C.GREEN)).strip()
             self.match_mode = "any" if m == "2" else "all"
         else:
             self.match_mode = "all"
 
         pl = ", ".join(f"{p}/{self.port_name(p)}" for p in self.ports_filter)
-        print(C.paint(f"  [+] Filtro activo: {pl}  ({self.match_mode})", C.GREEN))
+        print(C.paint(f"  [+] Active filter: {pl}  ({self.match_mode})", C.GREEN))
 
     def ask_firewall_mode(self):
         """Filtro CON/SIN firewall. Solo tiene sentido con puertos activos,
@@ -771,18 +770,17 @@ class IPScannerAdvanced:
             self.firewall_mode = "any"
             return
         print(C.paint("\n" + "─" * 60, C.CYAN))
-        print(C.paint("  DETECCION DE FIREWALL", C.BOLD + C.YELLOW))
+        print(C.paint("  FIREWALL DETECTION", C.BOLD + C.YELLOW))
         print(C.paint("─" * 60, C.CYAN))
-        print("  Permite separar IPs que responden con claridad (aptas para")
-        print("  escanear a fondo) de IPs detras de un firewall que filtra")
-        print("  los paquetes en silencio.")
-        print(f"    {C.paint('[1]', C.GREEN)} Cualquiera                [por defecto]")
-        print(f"    {C.paint('[2]', C.GREEN)} Solo IPs SIN firewall     (permiten escaneo directo)")
-        print(f"    {C.paint('[3]', C.GREEN)} Solo IPs CON firewall     (filtran/descartan paquetes)")
-        m = input(C.paint("  [?] Elige (1/2/3): ", C.GREEN)).strip()
+        print("  Separate hosts that respond clearly (suitable for direct scanning)")
+        print("  from hosts behind a firewall that silently filters packets.")
+        print(f"    {C.paint('[1]', C.GREEN)} Any                       [default]")
+        print(f"    {C.paint('[2]', C.GREEN)} Hosts WITHOUT a firewall  (direct responses)")
+        print(f"    {C.paint('[3]', C.GREEN)} Hosts WITH a firewall     (filtered packets)")
+        m = input(C.paint("  [?] Choose (1/2/3): ", C.GREEN)).strip()
         self.firewall_mode = {"2": "no_firewall", "3": "with_firewall"}.get(m, "any")
         if self.firewall_mode != "any":
-            print(C.paint(f"  [+] Filtro de firewall activo: {self.firewall_mode}", C.GREEN))
+            print(C.paint(f"  [+] Firewall filter enabled: {self.firewall_mode}", C.GREEN))
 
     def ask_validation(self):
         """Configurar la validacion anti-middlebox / anti-IDS."""
@@ -790,25 +788,25 @@ class IPScannerAdvanced:
             self.validate_hosts = False
             return
         print(C.paint("\n" + "─" * 60, C.CYAN))
-        print(C.paint("  VALIDACION DE HOST", C.BOLD + C.YELLOW))
+        print(C.paint("  HOST VALIDATION", C.BOLD + C.YELLOW))
         print(C.paint("─" * 60, C.CYAN))
-        print("  Comprueba que la IP es un host real con servicios reales,")
-        print("  no un middlebox/CPE que acepta todo sin servir nada.")
-        print("  Tambien verifica que la conexion no muere tras el probe.")
+        print("  Checks that the IP is a real host with real services,")
+        print("  not a middlebox/CPE that accepts everything without serving anything.")
+        print("  It also verifies that the connection survives the probe.")
         print()
         print(C.paint("  Checks:", C.WHITE))
-        print(C.paint("    · Canary ports  ", C.CYAN) + "prueba puertos random que deberian estar cerrados")
-        print(C.paint("    · Banner grab   ", C.CYAN) + "verifica que el servicio responde con datos reales")
-        print(C.paint("    · Post-probe    ", C.CYAN) + "reconecta tras el probe para detectar IDS/bloqueo")
+        print(C.paint("    · Canary ports  ", C.CYAN) + "tests random ports that should be closed")
+        print(C.paint("    · Banner grab   ", C.CYAN) + "verifies that the service returns real data")
+        print(C.paint("    · Post-probe    ", C.CYAN) + "reconnects after probing to detect IDS/blocking")
         print()
-        print(f"    {C.paint('[1]', C.GREEN)} Activar validacion      [por defecto]")
-        print(f"    {C.paint('[2]', C.GREEN)} Desactivar (mas rapido, menos fiable)")
-        m = input(C.paint("  [?] Elige (1/2): ", C.GREEN)).strip()
+        print(f"    {C.paint('[1]', C.GREEN)} Enable validation       [default]")
+        print(f"    {C.paint('[2]', C.GREEN)} Disable (faster, less reliable)")
+        m = input(C.paint("  [?] Choose (1/2): ", C.GREEN)).strip()
         self.validate_hosts = m != "2"
         if self.validate_hosts:
-            print(C.paint("  [+] Validacion de host activa", C.GREEN))
+            print(C.paint("  [+] Host validation enabled", C.GREEN))
         else:
-            print(C.paint("  [i] Validacion de host desactivada.", C.GRAY))
+            print(C.paint("  [i] Host validation disabled.", C.GRAY))
 
     def ask_performance(self):
         """Permite bajar hilos/timeout (util en moviles/Termux)."""
@@ -830,11 +828,7 @@ class IPScannerAdvanced:
     # ------------------------------------------------------------------
     # Bucle principal (todo integrado aqui)
     # ------------------------------------------------------------------
-    def run(self, cli_args=None):
-        if cli_args and cli_args.target:
-            self.configure_from_args(cli_args)
-            self.run_cli_target(cli_args.target)
-            return
+    def run(self):
         self.banner()
 
         scan_type = None
@@ -843,7 +837,7 @@ class IPScannerAdvanced:
 
         while True:
             self.print_menu()
-            choice = input(C.paint("\n[+] Selecciona una opcion: ", C.GREEN)).strip()
+            choice = input(C.paint("\n[+] Select an option: ", C.GREEN)).strip()
 
             if choice == '1':
                 scan_type = 'class_a'; break
@@ -854,24 +848,24 @@ class IPScannerAdvanced:
             elif choice == '4':
                 scan_type = 'all_classes'; break
             elif choice == '5':
-                print(C.paint("[*] Saliendo.", C.GRAY)); return
+                print(C.paint("[*] Exiting.", C.GRAY)); return
             elif choice == '6':
                 network_custom = input(C.paint(
-                    "[+] Red/CIDR (ej: 192.168.1.0/24 o 2001:db8::/64): ", C.GREEN)).strip()
+                    "[+] Network/CIDR (e.g. 192.168.1.0/24 or 2001:db8::/64): ", C.GREEN)).strip()
                 if network_custom:
                     scan_type = 'custom'; break
-                print(C.paint("[!] CIDR vacio.", C.YELLOW))
+                print(C.paint("[!] Empty CIDR.", C.YELLOW))
             elif choice == '7':
                 try:
                     ipv6_count = int(input(C.paint(
-                        "[+] Cuantas IPs IPv6 escanear? (0=indefinido, def 100): ", C.GREEN)).strip() or 100)
+                        "[+] How many IPv6 addresses? (0=unlimited, default 100): ", C.GREEN)).strip() or 100)
                 except ValueError:
                     ipv6_count = 100
                 scan_type = 'random_ipv6'; break
             elif choice == '8':
                 scan_type = 'random_ipv4'; break
             else:
-                print(C.paint("[!] Opcion invalida", C.YELLOW))
+                print(C.paint("[!] Invalid option", C.YELLOW))
 
         # Configuracion comun a TODOS los modos (deteccion rapida por puertos)
         self.ask_port_filter()
@@ -882,15 +876,15 @@ class IPScannerAdvanced:
         print(C.paint("\n" + "─" * 60, C.CYAN))
         if self.ports_filter:
             pl = ", ".join(f"{p}/{self.port_name(p)}" for p in self.ports_filter)
-            print(C.paint(f"[+] Iniciando deteccion por puertos: {pl} ({self.match_mode})", C.BOLD + C.GREEN))
+            print(C.paint(f"[+] Starting port detection: {pl} ({self.match_mode})", C.BOLD + C.GREEN))
             if self.firewall_mode != "any":
-                print(C.paint(f"[+] Filtro de firewall: {self.firewall_mode}", C.BOLD + C.GREEN))
+                print(C.paint(f"[+] Firewall filter: {self.firewall_mode}", C.BOLD + C.GREEN))
             if self.validate_hosts:
-                print(C.paint("[+] Validacion: canary + banner + post-probe", C.BOLD + C.GREEN))
+                print(C.paint("[+] Validation: canary + banner + post-probe", C.BOLD + C.GREEN))
         else:
-            print(C.paint("[+] Iniciando deteccion por ping ICMP (2 intentos/IP)", C.BOLD + C.GREEN))
-        print(C.paint(f"[+] Hilos: {self.threads} · Timeout: {self.port_timeout}s", C.GRAY))
-        print(C.paint("[+] Pulsa CTRL+C para detener y guardar", C.GRAY))
+            print(C.paint("[+] Starting ICMP ping detection (2 attempts/IP)", C.BOLD + C.GREEN))
+        print(C.paint(f"[+] Threads: {self.threads} · Timeout: {self.port_timeout}s", C.GRAY))
+        print(C.paint("[+] Press CTRL+C to stop and save", C.GRAY))
         print(C.paint("─" * 60, C.CYAN))
 
         self.start_workers()
@@ -905,33 +899,6 @@ class IPScannerAdvanced:
             t.join(timeout=1.0)
         self.show_results()
 
-    def configure_from_args(self, args):
-        """Apply validated command-line options to the scanner."""
-        self.ports_filter = args.ports
-        self.match_mode = args.match_mode
-        self.firewall_mode = args.firewall_mode
-        self.validate_hosts = bool(self.ports_filter) and not args.no_host_validation
-        if args.threads is not None:
-            self.threads = args.threads
-        if args.timeout is not None:
-            self.port_timeout = args.timeout
-            self.timeout = max(1, int(round(args.timeout)))
-
-    def run_cli_target(self, target):
-        """Scan one address or a finite CIDR network from the command line."""
-        try:
-            network = ipaddress.ip_network(target, strict=False)
-        except ValueError as error:
-            raise SystemExit(f"error: invalid IP address or CIDR network: {error}") from error
-        self.start_workers()
-        print(C.paint(f"[*] Scanning {network} (IPv{network.version})", C.BLUE))
-        self.enqueue_network(str(network), f"v{network.version}")
-        self.wait_drain()
-        self.running = False
-        for worker in self.workers:
-            worker.join(timeout=1.0)
-        self.show_results()
-
 if __name__ == "__main__":
     scanner = IPScannerAdvanced()
-    scanner.run(parse_args())
+    scanner.run()
