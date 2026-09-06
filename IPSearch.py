@@ -10,6 +10,8 @@ import sys
 import queue
 import errno
 import ssl
+from ipsearcher.cli import parse_args
+from ipsearcher.ports import COMMON_PORTS
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ----------------------------------------------------------------------------
@@ -35,17 +37,6 @@ class C:
         if not cls.enabled:
             return text
         return f"{color}{text}{cls.RESET}"
-
-# Puertos comunes: numero -> nombre de servicio
-COMMON_PORTS = {
-    21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP", 53: "DNS",
-    80: "HTTP", 110: "POP3", 135: "MSRPC", 139: "NetBIOS", 143: "IMAP",
-    443: "HTTPS", 445: "SMB", 465: "SMTPS", 587: "SMTP", 993: "IMAPS",
-    995: "POP3S", 1433: "MSSQL", 1723: "PPTP", 2049: "NFS", 3306: "MySQL",
-    3389: "RDP", 5432: "PostgreSQL", 5900: "VNC", 6379: "Redis",
-    8080: "HTTP-Alt", 8443: "HTTPS-Alt", 9200: "Elastic", 27017: "MongoDB",
-}
-
 
 class IPScannerAdvanced:
     def __init__(self):
@@ -115,7 +106,7 @@ class IPScannerAdvanced:
     def create_folder(self):
         if not os.path.exists(self.folder):
             os.makedirs(self.folder)
-            print(C.paint(f"[+] Carpeta '{self.folder}' creada", C.GREEN))
+            print(C.paint(f"[+] Created folder '{self.folder}'", C.GREEN))
 
     def get_next_file_number(self):
         existing = [f for f in os.listdir(self.folder)
@@ -528,7 +519,7 @@ class IPScannerAdvanced:
             try:
                 net = ipaddress.ip_network(network_custom, strict=False)
             except Exception as e:
-                print(C.paint(f"[!] Error parseando la red: {e}", C.RED))
+                print(C.paint(f"[!] Network parsing error: {e}", C.RED))
                 return
             print(C.paint(f"[*] Escaneando red: {net} (v{net.version})", C.BLUE))
             self.enqueue_network(str(net), f"v{net.version}")
@@ -839,7 +830,11 @@ class IPScannerAdvanced:
     # ------------------------------------------------------------------
     # Bucle principal (todo integrado aqui)
     # ------------------------------------------------------------------
-    def run(self):
+    def run(self, cli_args=None):
+        if cli_args and cli_args.target:
+            self.configure_from_args(cli_args)
+            self.run_cli_target(cli_args.target)
+            return
         self.banner()
 
         scan_type = None
@@ -910,6 +905,33 @@ class IPScannerAdvanced:
             t.join(timeout=1.0)
         self.show_results()
 
+    def configure_from_args(self, args):
+        """Apply validated command-line options to the scanner."""
+        self.ports_filter = args.ports
+        self.match_mode = args.match_mode
+        self.firewall_mode = args.firewall_mode
+        self.validate_hosts = bool(self.ports_filter) and not args.no_host_validation
+        if args.threads is not None:
+            self.threads = args.threads
+        if args.timeout is not None:
+            self.port_timeout = args.timeout
+            self.timeout = max(1, int(round(args.timeout)))
+
+    def run_cli_target(self, target):
+        """Scan one address or a finite CIDR network from the command line."""
+        try:
+            network = ipaddress.ip_network(target, strict=False)
+        except ValueError as error:
+            raise SystemExit(f"error: invalid IP address or CIDR network: {error}") from error
+        self.start_workers()
+        print(C.paint(f"[*] Scanning {network} (IPv{network.version})", C.BLUE))
+        self.enqueue_network(str(network), f"v{network.version}")
+        self.wait_drain()
+        self.running = False
+        for worker in self.workers:
+            worker.join(timeout=1.0)
+        self.show_results()
+
 if __name__ == "__main__":
     scanner = IPScannerAdvanced()
-    scanner.run()
+    scanner.run(parse_args())
