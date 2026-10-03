@@ -42,3 +42,8 @@ ipsearcher/
 ```
 
 Only scan systems that you own or have explicit permission to test.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
